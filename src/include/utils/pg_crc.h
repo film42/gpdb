@@ -169,10 +169,6 @@ static inline pg_crc32 crc32cFinish(pg_crc32 crc)
 */
 typedef pg_crc32 (*CRC32CFunctionPtr)(pg_crc32 crc, const void* data, int length);
 
-extern pg_crc32 crc32cSlicingBy8(pg_crc32 crc, const void* data, int length);
-extern pg_crc32 crc32cHardware32(pg_crc32 crc, const void* data, int length);
-extern pg_crc32 crc32cHardware64(pg_crc32 crc, const void* data, int length);
-
 /** This will map automatically to the "best" CRC implementation. */
 extern CRC32CFunctionPtr crc32c;
 
