@@ -1,10 +1,23 @@
-#include "c.h"
-#include "port/pg_crc32c.h"
-
-/*
- * Detect if we have new Intel CPU instructions
- * This gets called the first time someone tries to use crc32c.
+/*-------------------------------------------------------------------------
+ *
+ * pg_crc32c_choose.c
+ *	  Choose which CRC-32C implementation to use, at runtime.
+ *
+ * Try to the special CRC instructions introduced in Intel SSE 4.2,
+ * if available on the platform we're running on, but fall back to the
+ * slicing-by-8 implementation otherwise.
+ *
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *
+ * IDENTIFICATION
+ *	  src/port/pg_crc32c_choose.c
+ *
+ *-------------------------------------------------------------------------
  */
+
+#include "c.h"
 
 #ifdef HAVE__GET_CPUID
 #include <cpuid.h>
@@ -14,8 +27,10 @@
 #include <intrin.h>
 #endif
 
-pg_crc32
-crc32c_detect_best_method(pg_crc32 crc, const void* data, int length)
+#include "port/pg_crc32c.h"
+
+static bool
+pg_crc32c_sse42_available(void)
 {
 	unsigned int exx[4] = {0, 0, 0, 0};
 
@@ -24,26 +39,25 @@ crc32c_detect_best_method(pg_crc32 crc, const void* data, int length)
 #elif defined(HAVE__CPUID)
 	__cpuid(exx, 1);
 #else
-	#error cpuid instruction not available
+#error cpuid instruction not available
 #endif
 
-    bool hasSSE42 = (exx[2] & (1 << 20)) != 0;	/* SSE 4.2 */
-
-	if (hasSSE42)
-	{
-#ifdef __LP64__
-		pg_crc32c = &crc32c_hardware_64;
-#else
-		pg_crc32c = &crc32c_hardware_32;
-#endif
-	}
-	else
-		pg_crc32c = &crc32c_slicing_by_8;
-
-	return pg_crc32c(crc, data, length);
+	return (exx[2] & (1 << 20)) != 0;	/* SSE 4.2 */
 }
 
-#if defined(USE_SSE42_CRC32C_WITH_RUNTIME_CHECK)
-/* Function pointers to functions customized for the hardware platform */
-crc32c_function_ptr pg_crc32c = &crc32c_detect_best_method;
-#endif
+/*
+ * This gets called on the first call. It replaces the function pointer
+ * so that subsequent calls are routed directly to the chosen implementation.
+ */
+static pg_crc32c
+pg_comp_crc32c_choose(pg_crc32c crc, const void *data, size_t len)
+{
+	if (pg_crc32c_sse42_available())
+		pg_comp_crc32c = pg_comp_crc32c_sse42;
+	else
+		pg_comp_crc32c = pg_comp_crc32c_sb8;
+
+	return pg_comp_crc32c(crc, data, len);
+}
+
+pg_crc32c	(*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len) = pg_comp_crc32c_choose;

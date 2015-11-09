@@ -110,7 +110,7 @@ readXLogPage(void)
 	return false;
 }
 
-/* 
+/*
  * Exit closing active database connections
  */
 static void
@@ -170,7 +170,7 @@ DBConnect(const char *host, const char *port, char *database, const char *user)
 			PQerrorMessage(conn));
 		exit_gracefuly(1);
 	}
-	
+
 	return conn;
 }
 
@@ -191,7 +191,8 @@ RecordIsValid(XLogRecord *record, XLogRecPtr recptr)
 	char	   *blk;
 
 	/* First the rmgr data */
-	crc = crc32c(crc32cInit(), XLogRecGetData(record), len);
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, XLogRecGetData(record), len);
 
 	/* Add in the backup blocks, if any */
 	blk = (char *) XLogRecGetData(record) + len;
@@ -210,7 +211,7 @@ RecordIsValid(XLogRecord *record, XLogRecPtr recptr)
 			return false;
 		}
 		blen = sizeof(BkpBlock) + BLCKSZ - bkpb.hole_length;
-		crc = crc32c(crc, blk, blen);
+		COMP_CRC32C(crc, blk, blen);
 		blk += blen;
 	}
 
@@ -228,19 +229,18 @@ RecordIsValid(XLogRecord *record, XLogRecPtr recptr)
 	}
 
 	/* Finally include the record header */
-	crc = crc32c(crc, (char *) record + sizeof(pg_crc32),
-			   SizeOfXLogRecord - sizeof(pg_crc32));
-	crc32cFinish(crc);
+	COMP_CRC32C(crc, (char *) record + sizeof(pg_crc32), SizeOfXLogRecord - sizeof(pg_crc32));
+	FIN_CRC32C(crc);
 
-	if (!EQ_CRC32(record->xl_crc, crc))
+	if (!EQ_LEGACY_CRC32(record->xl_crc, crc))
 	{
 		/*
 		 * It may be that this record uses the old crc algorithm.  Recompute.
 		 */
 
 		/* First the rmgr data */
-		INIT_CRC32(crc);
-		COMP_CRC32(crc, XLogRecGetData(record), len);
+		INIT_LEGACY_CRC32(crc);
+		COMP_LEGACY_CRC32(crc, XLogRecGetData(record), len);
 
 		/* Add in the backup blocks, if any */
 		blk = (char *) XLogRecGetData(record) + len;
@@ -259,18 +259,18 @@ RecordIsValid(XLogRecord *record, XLogRecPtr recptr)
 				return false;
 			}
 			blen = sizeof(BkpBlock) + BLCKSZ - bkpb.hole_length;
-			COMP_CRC32(crc, blk, blen);
+			COMP_LEGACY_CRC32(crc, blk, blen);
 			blk += blen;
 		}
 
 		/* Finally include the record header */
-		COMP_CRC32(crc, (char *) record + sizeof(pg_crc32),
+		COMP_LEGACY_CRC32(crc, (char *) record + sizeof(pg_crc32),
 				   SizeOfXLogRecord - sizeof(pg_crc32));
-		FIN_CRC32(crc);
+		FIN_LEGACY_CRC32(crc);
 
 	}
 
-	if (!EQ_CRC32(record->xl_crc, crc))
+	if (!EQ_LEGACY_CRC32(record->xl_crc, crc))
 	{
 		printf("incorrect resource manager data checksum in record at %X/%X\n",
 			   recptr.xlogid, recptr.xrecoff);
@@ -407,7 +407,7 @@ restart:
 			}
 			pageHeaderSize = XLogPageHeaderSize((XLogPageHeader) pageBuffer);
 			contrecord = (XLogContRecord *) (pageBuffer + pageHeaderSize);
-			if (contrecord->xl_rem_len == 0 || 
+			if (contrecord->xl_rem_len == 0 ||
 				total_len != (contrecord->xl_rem_len + gotlen))
 			{
 				printf("ReadRecord: invalid cont-record len %u in logfile %u seg %u off %u\n",
@@ -495,7 +495,7 @@ getDbName(uint32 db)
 {
 	resetPQExpBuffer(dbQry);
 	if((conn) && (lastDbOid != db))
-	{	
+	{
 		PQclear(res);
 		appendPQExpBuffer(dbQry, "SELECT datname FROM pg_database WHERE oid = %i", db);
 		res = PQexec(conn, dbQry->data);
@@ -527,7 +527,7 @@ getDbName(uint32 db)
 }
 
 /*
- * Atempt to get the name of relation and copy to relName 
+ * Atempt to get the name of relation and copy to relName
  * (if there's a database connection and the reloid changed)
  * Copy a string with oid if not found
  */
@@ -560,7 +560,7 @@ getRelName(uint32 relid)
 	}
 	else if(lastRelOid == relid)
 		return;
-	
+
 	/* Didn't find the name, return string with oid */
 	sprintf(relName, "%u", relid);
 	return;
@@ -580,7 +580,7 @@ printField(char *data, int offset, int type, uint32 maxFieldLen)
 	float4 floatNumber;
 	float8 doubleNumber;
 	Oid objectId;
-	
+
 	// Just print out the value of a specific data type from the data array
 	switch(type)
 	{
@@ -608,13 +608,13 @@ printField(char *data, int offset, int type, uint32 maxFieldLen)
 			}
 			for(i = sizeof(int32); i < size; i++)
 				printf("%c", data[offset + i]);
-				
+
 			//return ( (size % sizeof(int)) ? size + sizeof(int) - (size % sizeof(int)):size);
 			return MAXALIGN(size * sizeof(char));
 		case 19: //name
 			for(i = 0; i < NAMEDATALEN && data[offset + i] != '\0'; i++)
 				printf("%c", data[offset + i]);
-				
+
 			return NAMEDATALEN;
 		case 21: //smallint
 			memcpy(&smallint, &data[offset], sizeof(int16));
@@ -636,7 +636,7 @@ printField(char *data, int offset, int type, uint32 maxFieldLen)
 		case 1005: //int2vector
 			memcpy(&size, &data[offset], sizeof(int32));
 			return MAXALIGN(size);
-			
+
 	}
 	return 0;
 }
@@ -654,12 +654,12 @@ printUpdate(xl_heap_update *xlrecord, uint32 datalen)
 
 	MemSet((char *) data, 0, MaxHeapTupleSize * sizeof(char));
 	MemSet(nullBitMap, 0, MaxNullBitmapLen);
-	
+
 	if(datalen > MaxHeapTupleSize)
 		return;
 
-	/* Copy the heap header into hhead, 
-	   the the heap data into data 
+	/* Copy the heap header into hhead,
+	   the the heap data into data
 	   and the tuple null bitmap into nullBitMap */
 	memcpy(&hhead, (char *) xlrecord + SizeOfHeapUpdate, SizeOfHeapHeader);
 	memcpy(&data, (char *) xlrecord + hhead.t_hoff + 4, datalen);
@@ -671,7 +671,7 @@ printUpdate(xl_heap_update *xlrecord, uint32 datalen)
 	if((conn) && (lastDbConn))
 	{
 		int	i, rows = 0, fieldSize = 0;
-		
+
 		resetPQExpBuffer(dbQry);
 		PQclear(res);
 		appendPQExpBuffer(dbQry, "SELECT attname, atttypid from pg_attribute where attnum > 0 AND attrelid = '%i' ORDER BY attnum", lastRelOid);
@@ -722,24 +722,24 @@ printInsert(xl_heap_insert *xlrecord, uint32 datalen)
 
 	MemSet((char *) data, 0, MaxHeapTupleSize * sizeof(char));
 	MemSet(nullBitMap, 0, MaxNullBitmapLen);
-	
+
 	if(datalen > MaxHeapTupleSize)
 		return;
 
-	/* Copy the heap header into hhead, 
-	   the the heap data into data 
+	/* Copy the heap header into hhead,
+	   the the heap data into data
 	   and the tuple null bitmap into nullBitMap */
 	memcpy(&hhead, (char *) xlrecord + SizeOfHeapInsert, SizeOfHeapHeader);
 	memcpy(&data, (char *) xlrecord + hhead.t_hoff - 4, datalen);
 	memcpy(&nullBitMap, (bits8 *) xlrecord + SizeOfHeapInsert + SizeOfHeapHeader, BITMAPLEN(HeapTupleHeaderGetNatts(&hhead)) * sizeof(bits8));
-	
+
 	printf("INSERT INTO \"%s\" (", relName);
-	
+
 	// Get relation field names and types
 	if((conn) && (lastDbConn))
 	{
 		int	i, rows = 0, fieldSize = 0;
-		
+
 		resetPQExpBuffer(dbQry);
 		PQclear(res);
 		appendPQExpBuffer(dbQry, "SELECT attname, atttypid from pg_attribute where attnum > 0 AND attrelid = '%i' ORDER BY attnum", lastRelOid);
@@ -977,7 +977,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 		getRelName(bkb.node.relNode);
 		pg = (Page)(blk + sizeof(BkpBlock));
 		printf("bkpblock %d: ts %s db %s rel %s block %u hole %u len %u "
-			   "lsn (%X,%X)\n", 
+			   "lsn (%X,%X)\n",
 				i+1, spaceName, dbName, relName,
 			   	bkb.block, bkb.hole_offset, bkb.hole_length,
 				PageGetLSN(pg).xlogid, PageGetLSN(pg).xrecoff);
@@ -1001,7 +1001,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 						   "  nextoid %u; nextmulti %u; nextoffset %u; %s at %s\n",
 						   checkpoint->redo.xlogid, checkpoint->redo.xrecoff,
 						   checkpoint->undo.xlogid, checkpoint->undo.xrecoff,
-						   checkpoint->ThisTimeLineID, checkpoint->nextXid, 
+						   checkpoint->ThisTimeLineID, checkpoint->nextXid,
 						   checkpoint->nextOid,
 						   checkpoint->nextMulti,
 						   checkpoint->nextMultiOffset,
@@ -1013,7 +1013,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 						   "  nextoid %u; nextmulti %u; nextoffset %u; %s\n",
 						   checkpoint->redo.xlogid, checkpoint->redo.xrecoff,
 						   checkpoint->undo.xlogid, checkpoint->undo.xrecoff,
-						   checkpoint->ThisTimeLineID, checkpoint->nextXid, 
+						   checkpoint->ThisTimeLineID, checkpoint->nextXid,
 						   checkpoint->nextOid,
 						   checkpoint->nextMulti,
 						   checkpoint->nextMultiOffset,
@@ -1176,7 +1176,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				getSpaceName(xlrec.rnode.spcNode);
 				getDbName(xlrec.rnode.dbNode);
 				getRelName(xlrec.rnode.relNode);
-				printf("create rel: %s/%s/%s\n", 
+				printf("create rel: %s/%s/%s\n",
 						spaceName, dbName, relName);
 			}
 			else if (info == XLOG_SMGR_TRUNCATE)
@@ -1319,10 +1319,10 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getSpaceName(xlrec.target.node.spcNode);
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
-					
+
 					if(statements)
 						printf("DELETE FROM %s WHERE ...", relName);
-					
+
 					printf("delete%s: ts %s db %s rel %s block %u off %u\n",
 						   (info & XLOG_HEAP_INIT_PAGE) ? "(init)" : "",
 						   spaceName, dbName, relName,
@@ -1344,7 +1344,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 						printUpdate((xl_heap_update *) XLogRecGetData(record), record->xl_len - SizeOfHeapUpdate - SizeOfHeapHeader);
 
 					printf("%supdate%s: ts %s db %s rel %s block %u off %u to block %u off %u\n",
-						   /*(info & XLOG_HEAP_HOT_UPDATE) ? "hot_" : */ "",  
+						   /*(info & XLOG_HEAP_HOT_UPDATE) ? "hot_" : */ "",
 						   (info & XLOG_HEAP_INIT_PAGE) ? "(init)" : "",
 						   spaceName, dbName, relName,
 						   ItemPointerGetBlockNumber(&xlrec.target.tid),
@@ -1392,7 +1392,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getSpaceName(xlrec.heapnode.node.spcNode);
 					getDbName(xlrec.heapnode.node.dbNode);
 					getRelName(xlrec.heapnode.node.relNode);
-					printf("newpage: ts %s db %s rel %s block %u\n", 
+					printf("newpage: ts %s db %s rel %s block %u\n",
 							spaceName, dbName, relName,
 						   xlrec.blkno);
 					break;
@@ -1421,7 +1421,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getSpaceName(xlrec.target.node.spcNode);
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
-					printf("inplace: ts %s db %s rel %s block %u off %u\n", 
+					printf("inplace: ts %s db %s rel %s block %u off %u\n",
 							spaceName, dbName, relName,
 						   	ItemPointerGetBlockNumber(&xlrec.target.tid),
 						   	ItemPointerGetOffsetNumber(&xlrec.target.tid));
@@ -1476,7 +1476,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
 
-					printf("split_l: index %s/%s/%s tid %u/%u otherblk %u\n", 
+					printf("split_l: index %s/%s/%s tid %u/%u otherblk %u\n",
 							spaceName, dbName, relName,
 						   	BlockIdGetBlockNumber(&xlrec.target.tid.ip_blkid),
 						   	xlrec.target.tid.ip_posid,
@@ -1492,7 +1492,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
 
-					printf("split_r: index %s/%s/%s tid %u/%u otherblk %u\n", 
+					printf("split_r: index %s/%s/%s tid %u/%u otherblk %u\n",
 							spaceName, dbName, relName,
 						   	BlockIdGetBlockNumber(&xlrec.target.tid.ip_blkid),
 						   	xlrec.target.tid.ip_posid,
@@ -1508,7 +1508,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
 
-					printf("split_l_root: index %s/%s/%s tid %u/%u otherblk %u\n", 
+					printf("split_l_root: index %s/%s/%s tid %u/%u otherblk %u\n",
 							spaceName, dbName, relName,
 						   	BlockIdGetBlockNumber(&xlrec.target.tid.ip_blkid),
 						   	xlrec.target.tid.ip_posid,
@@ -1524,7 +1524,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getDbName(xlrec.target.node.dbNode);
 					getRelName(xlrec.target.node.relNode);
 
-					printf("split_r_root: index %s/%s/%s tid %u/%u otherblk %u\n", 
+					printf("split_r_root: index %s/%s/%s tid %u/%u otherblk %u\n",
 							spaceName, dbName, relName,
 						   	BlockIdGetBlockNumber(&xlrec.target.tid.ip_blkid),
 						   	xlrec.target.tid.ip_posid,
@@ -1540,7 +1540,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getSpaceName(xlrec.btreenode.node.spcNode);
 					getDbName(xlrec.btreenode.node.dbNode);
 					getRelName(xlrec.btreenode.node.relNode);
-					printf("delete: index %s/%s/%s block %u\n", 
+					printf("delete: index %s/%s/%s block %u\n",
 							spaceName, dbName,	relName,
 						   	xlrec.block);
 					break;
@@ -1574,7 +1574,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					memcpy(&md, XLogRecGetData(record) + sizeof(xlrec),
 						sizeof(xl_btree_metadata));
 
-					printf("delete_page_meta: index %s/%s/%s tid %u/%u deadblk %u root %u/%u froot %u/%u\n", 
+					printf("delete_page_meta: index %s/%s/%s tid %u/%u deadblk %u root %u/%u froot %u/%u\n",
 							spaceName, dbName, relName,
 						   	BlockIdGetBlockNumber(&xlrec.target.tid.ip_blkid),
 						   	xlrec.target.tid.ip_posid,
@@ -1591,7 +1591,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					getDbName(xlrec.btreenode.node.dbNode);
 					getRelName(xlrec.btreenode.node.relNode);
 
-					printf("newroot: index %s/%s/%s rootblk %u level %u\n", 
+					printf("newroot: index %s/%s/%s rootblk %u level %u\n",
 							spaceName, dbName, relName,
 						   	xlrec.rootblk, xlrec.level);
 					break;
@@ -1623,7 +1623,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_INSERT_NEWLOV:
 				{
 					xl_bm_newpage	xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1638,7 +1638,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_INSERT_LOVITEM:
 				{
 					xl_bm_lovitem	xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1647,7 +1647,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					printf("bitmap_insert_lovitem: index %s/%s/%s block %u\n",
 							spaceName, dbName, relName,
 							xlrec.bm_lov_blkno);
-					
+
 					if (xlrec.bm_is_new_lov_blkno)
 						printf("bitmap_insert_lovitem: index %s/%s/%s block %u\n",
 								spaceName, dbName, relName,
@@ -1657,7 +1657,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_INSERT_META:
 				{
 					xl_bm_metapage	xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1672,7 +1672,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_INSERT_BITMAP_LASTWORDS:
 				{
 					xl_bm_bitmap_lastwords xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1687,7 +1687,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_INSERT_WORDS:
 				{
 					xl_bm_bitmapwords	xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1696,7 +1696,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					printf("bitmap_insert_words: index %s/%s/%s block %u\n",
 							spaceName, dbName, relName,
 							xlrec.bm_lov_blkno);
-					
+
 					if (!xlrec.bm_is_last)
 						printf("bitmap_insert_words: index %s/%s/%s block %u\n",
 								spaceName, dbName, relName,
@@ -1707,7 +1707,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 				case XLOG_BITMAP_UPDATEWORD:
 				{
 					xl_bm_updateword	xlrec;
-					
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1716,13 +1716,13 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 					printf("bitmap_update_word: index %s/%s/%s block %u\n",
 							spaceName, dbName, relName,
 							xlrec.bm_blkno);
-				
+
 					break;
 				}
 				case XLOG_BITMAP_UPDATEWORDS:
 				{
 					xl_bm_updatewords	xlrec;
-				
+
 					memcpy(&xlrec, XLogRecGetData(record), sizeof(xlrec));
 					getSpaceName(xlrec.bm_node.spcNode);
 					getDbName(xlrec.bm_node.dbNode);
@@ -1732,7 +1732,7 @@ dumpXLogRecord(XLogRecord *record, bool header_only)
 							spaceName, dbName, relName,
 							xlrec.bm_first_blkno);
 
-					
+
 					if (xlrec.bm_two_pages)
 						printf("bitmap_update_words: index %s/%s/%s block %u\n",
 								spaceName, dbName, relName,
@@ -1894,7 +1894,7 @@ help(void)
 	printf("Usage:\n");
 	printf("  xlogdump [OPTION]... [segment file]\n");
 	printf("\nOptions controlling the output content:\n");
-	printf("  -r, --rmname=OPERATION    Outuputs only the transaction log records\n"); 
+	printf("  -r, --rmname=OPERATION    Outuputs only the transaction log records\n");
 	printf("                            containing the specified operation\n");
 	printf("  -t, --transactions        Outuputs only transaction info: the xid,\n");
 	printf("                            total length and status of each transaction\n");
@@ -1916,7 +1916,7 @@ main(int argc, char** argv)
 	static struct option long_options[] = {
 		{"transactions", no_argument, NULL, 't'},
 		{"statements", no_argument, NULL, 's'},
-		{"hide-timestamps", no_argument, NULL, 'T'},	
+		{"hide-timestamps", no_argument, NULL, 'T'},
 		{"rmid", required_argument, NULL, 'r'},
 		{"host", required_argument, NULL, 'h'},
 		{"port", required_argument, NULL, 'p'},
@@ -1924,7 +1924,7 @@ main(int argc, char** argv)
 		{"help", no_argument, NULL, '?'},
 		{NULL, 0, NULL, 0}
 	};
-	
+
 	if (argc == 1 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-?"))
 		help();
 
@@ -1937,7 +1937,7 @@ main(int argc, char** argv)
 				statements = true;
 				break;
 
-			case 't':			
+			case 't':
 				transactions = true;	/* show only transactions */
 				break;
 
@@ -1994,7 +1994,7 @@ main(int argc, char** argv)
 	}
 
 	exit_gracefuly(0);
-	
+
 	/* just to avoid a warning */
 	return 0;
 }
@@ -2224,7 +2224,7 @@ void dump_xlog_btree_insert_meta(XLogRecord *record)
 	datapos += sizeof(xl_btree_metadata);
 	datalen -= sizeof(xl_btree_metadata);
 
-	printf("insert_meta: index %s/%s/%s tid %u/%u downlink %u froot %u/%u\n", 
+	printf("insert_meta: index %s/%s/%s tid %u/%u downlink %u froot %u/%u\n",
 		spaceName, dbName, relName,
 		BlockIdGetBlockNumber(&xlrec->target.tid.ip_blkid),
 		xlrec->target.tid.ip_posid,
